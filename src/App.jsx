@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
-const APP_ID = "33Dmz5cu6MphS59w70vBM";
+const APP_ID = "33DowNN6WPxOPy3h2AXHo";
 const WS_URL = `wss://ws.binaryws.com/websockets/v3?app_id=${APP_ID}`;
 const DERIV_OAUTH_URL = `https://oauth.deriv.com/oauth2/authorize?app_id=${APP_ID}&l=EN&brand=deriv`;
 
