@@ -17,16 +17,91 @@ const DERIV_CLIENT_ID = "33DowNN6WPxOPy3h2AXHo"; // e.g. "app12345"
 const DERIV_REDIRECT_URI = window.location.origin + window.location.pathname;
 const DERIV_AUTH_BASE = "https://auth.deriv.com/oauth2";
 const OAUTH_SCOPES = "trade account_manage";
-function extractDerivTokenFromURL() {
+
+function base64urlEncode(bytes) {
+  const binary = String.fromCharCode(...bytes);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function generateRandomBase64url(byteLength = 32) {
+  const bytes = new Uint8Array(byteLength);
+  crypto.getRandomValues(bytes);
+  return base64urlEncode(bytes);
+}
+async function sha256Base64url(input) {
+  const data = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return base64urlEncode(new Uint8Array(digest));
+}
+
+// Kick off login: build the PKCE authorize URL and redirect the browser.
+async function startDerivLogin() {
+  const csrfToken = generateRandomBase64url(32);
+  const codeVerifier = generateRandomBase64url(32);
+  const codeChallenge = await sha256Base64url(codeVerifier);
+
+  sessionStorage.setItem("oauth_csrf_token", csrfToken);
+  sessionStorage.setItem("oauth_code_verifier", codeVerifier);
+
+  const params = new URLSearchParams({
+    response_type: "code",
+    client_id: DERIV_CLIENT_ID,
+    redirect_uri: DERIV_REDIRECT_URI,
+    scope: OAUTH_SCOPES,
+    state: csrfToken,
+    code_challenge: codeChallenge,
+    code_challenge_method: "S256",
+  });
+  window.location.href = `${DERIV_AUTH_BASE}/auth?${params.toString()}`;
+}
+
+// On app load, check if Deriv redirected back with ?code=...&state=...
+// and exchange the code for an access token.
+async function extractDerivTokenFromURL() {
   const params = new URLSearchParams(window.location.search);
-  const token = params.get("token1");
-  if (token) {
-    localStorage.setItem("deriv_token", token);
-    // Clean the URL so token doesn't sit in address bar
+  const code = params.get("code");
+  const state = params.get("state");
+  const error = params.get("error");
+
+  if (error) {
     window.history.replaceState({}, document.title, window.location.pathname);
-    return token;
+    console.error("Deriv OAuth error:", error, params.get("error_description"));
+    return null;
   }
-  return null;
+  if (!code) return null;
+
+  const storedState = sessionStorage.getItem("oauth_csrf_token");
+  const codeVerifier = sessionStorage.getItem("oauth_code_verifier");
+  window.history.replaceState({}, document.title, window.location.pathname);
+
+  if (!state || state !== storedState || !codeVerifier) {
+    console.error("OAuth state mismatch or missing code verifier");
+    return null;
+  }
+
+  try {
+    const body = new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      client_id: DERIV_CLIENT_ID,
+      redirect_uri: DERIV_REDIRECT_URI,
+      code_verifier: codeVerifier,
+    });
+    const res = await fetch(`${DERIV_AUTH_BASE}/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString(),
+    });
+    if (!res.ok) throw new Error(`Token exchange failed (${res.status})`);
+    const data = await res.json();
+    localStorage.setItem("deriv_token", data.access_token);
+    return data.access_token;
+  } catch (err) {
+    console.error("Token exchange error:", err);
+    return null;
+  } finally {
+    sessionStorage.removeItem("oauth_csrf_token");
+    sessionStorage.removeItem("oauth_code_verifier");
+  }
 }
 const MULT = 2.1;
 
@@ -257,7 +332,8 @@ function MoMoModal({ type, onClose }) {
 
 // ─── Login page ───────────────────────────────────────────────────────────────
 function LoginPage() {
-  const handleDerivAuth = () => { window.location.href = DERIV_OAUTH_URL; };
+  const handleDerivAuth = () => { startDerivLogin(); };
+  const notConfigured = DERIV_CLIENT_ID === "YOUR_DERIV_CLIENT_ID";
 
   return (
     <div style={{ minHeight:"100vh", background:"#f0f0f8", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'Inter',system-ui,sans-serif", padding:20 }}>
@@ -274,6 +350,12 @@ function LoginPage() {
           <div style={{ fontSize:14, color:"#6b7280", marginBottom:28, lineHeight:1.6 }}>
             Connect your Deriv account to start automated trading. You'll be taken to Deriv's website to log in securely.
           </div>
+
+          {notConfigured && (
+            <div style={{ background:"#fffbeb", border:"1px solid #fde68a", borderRadius:10, padding:"10px 14px", marginBottom:20, fontSize:12, color:"#92400e", lineHeight:1.6 }}>
+              ⚠️ Set <code>DERIV_CLIENT_ID</code> (and make sure this page's exact URL is registered as the redirect URI) in your Deriv dashboard before this button will work.
+            </div>
+          )}
 
           {/* Main CTA */}
           <button onClick={handleDerivAuth} style={{
@@ -336,8 +418,17 @@ function TradeRow({ t }) {
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
-  const [token,  setToken]  = useState(() => extractDerivTokenFromURL() || localStorage.getItem("deriv_token") || "");
+  const [token,  setToken]  = useState(() => localStorage.getItem("deriv_token") || "");
+  const [exchanging, setExchanging] = useState(() => new URLSearchParams(window.location.search).has("code"));
   const [activeTab, setActiveTab] = useState("trade");
+
+  useEffect(() => {
+    if (!new URLSearchParams(window.location.search).has("code")) return;
+    extractDerivTokenFromURL().then(t => {
+      if (t) setToken(t);
+      setExchanging(false);
+    });
+  }, []);
 
   // Config
   const [strategy,     setStrategy]     = useState(STRATEGIES[0]);
@@ -372,6 +463,7 @@ export default function App() {
 
   const { connected, account, balance, send, on, off } = useDerivWS(token);
   const handleLogout = () => { localStorage.removeItem("deriv_token"); setToken(""); setRunning(false); };
+  if (exchanging) return <div style={{ minHeight:"100vh", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'Inter',system-ui,sans-serif", color:"#6b7280" }}>Finishing Deriv login…</div>;
   if (!token) return <LoginPage />;
 
   const addLog = (msg, type="info") => setLogs(p => [{ msg, type, ts: new Date().toLocaleTimeString() }, ...p].slice(0, 100));
