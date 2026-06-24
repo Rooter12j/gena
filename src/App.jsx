@@ -1,11 +1,22 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
-const APP_ID = "33DowNN6WPxOPy3h2AXHo";
+const APP_ID = 1089;
 const WS_URL = `wss://ws.binaryws.com/websockets/v3?app_id=${APP_ID}`;
-const DERIV_OAUTH_URL = `https://oauth.deriv.com/oauth2/authorize?app_id=${APP_ID}&l=EN&brand=deriv`;
 
-// On app load, check if Deriv redirected back with a token in the URL
-// Deriv appends: ?acct1=CR123&token1=abc&cur1=USD
+// ─── Deriv OAuth (PKCE) ───────────────────────────────────────────────────────
+// Deriv retired the old implicit-grant flow on oauth.deriv.com (which just
+// appended ?token1=... to the redirect URL). Logging in now goes through
+// auth.deriv.com using OAuth 2.0 + PKCE, and it requires an app that YOU
+// register on https://developers.deriv.com/dashboard with this site's exact
+// URL as the redirect URI. The shared app_id 1089 has no redirect URI
+// registered for this domain, which is why clicking "Connect with Deriv"
+// did nothing useful — there's nowhere valid for Deriv to send you back to.
+//
+// Fill these in with your own values from the Deriv dashboard:
+const DERIV_CLIENT_ID = "33DowNN6WPxOPy3h2AXHo"; // e.g. "app12345"
+const DERIV_REDIRECT_URI = window.location.origin + window.location.pathname;
+const DERIV_AUTH_BASE = "https://auth.deriv.com/oauth2";
+const OAUTH_SCOPES = "trade account_manage";
 function extractDerivTokenFromURL() {
   const params = new URLSearchParams(window.location.search);
   const token = params.get("token1");
